@@ -197,9 +197,18 @@ def get_my_profile(user):
         return dict(row) if row else None
 
 
+
 def save_my_profile(user, values):
-    user_id = user["id"]
-    role = user["role"]
+    """Студент немесе оқытушы профилін сақтау."""
+
+    if not user:
+        raise ValueError("Жүйеге қайта кіріңіз")
+
+    user_id = user.get("id")
+    role = user.get("role")
+
+    if not user_id:
+        raise ValueError("Пайдаланушы ID табылмады")
 
     if role == "student":
         table = "students"
@@ -221,93 +230,100 @@ def save_my_profile(user, values):
         ]
 
     else:
-        raise ValueError("Рөл жарамсыз")
+        raise ValueError("Пайдаланушы рөлі белгісіз")
 
-    conn = db_connection()
+    for field in fields:
+        if field not in values:
+            raise ValueError(
+                f"Міндетті өріс жоқ: {field}"
+            )
 
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with db_connection() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
 
-        account = conn.execute(
-            """
-            SELECT id, role, profile_id
-            FROM users
-            WHERE id = ? AND is_active = 1
-            """,
-            (user_id,),
-        ).fetchone()
-
-        if not account or account["role"] != role:
-            raise ValueError("Аккаунт табылмады")
-
-        profile_id = account["profile_id"]
-
-        if profile_id:
-            existing = conn.execute(
-                f"SELECT id FROM {table} WHERE id = ?",
-                (profile_id,),
+            account = conn.execute(
+                """
+                SELECT id, role, profile_id
+                FROM users
+                WHERE id = ? AND is_active = 1
+                """,
+                (user_id,),
             ).fetchone()
 
-            if not existing:
+            if not account:
                 raise ValueError(
-                    "Байланыстырылған профиль табылмады"
+                    "Аккаунт жергілікті базадан табылмады"
                 )
 
-            assignments = ", ".join(
-                f"{field} = ?" for field in fields
-            )
+            if account["role"] != role:
+                raise ValueError(
+                    "Аккаунт рөлі сәйкес келмейді"
+                )
 
-            conn.execute(
-                f"""
-                UPDATE {table}
-                SET {assignments}
-                WHERE id = ?
-                """,
-                (
-                    *[values[field] for field in fields],
-                    profile_id,
-                ),
-            )
+            profile_id = account["profile_id"]
 
-        else:
-            columns = ", ".join(fields)
-            placeholders = ", ".join(
-                "?" for _ in fields
-            )
+            if profile_id:
+                existing = conn.execute(
+                    f"SELECT id FROM {table} WHERE id = ?",
+                    (profile_id,),
+                ).fetchone()
 
-            cursor = conn.execute(
-                f"""
-                INSERT INTO {table} ({columns})
-                VALUES ({placeholders})
-                """,
-                [values[field] for field in fields],
-            )
+                if not existing:
+                    raise ValueError(
+                        "Байланыстырылған профиль табылмады"
+                    )
 
-            profile_id = cursor.lastrowid
+                assignments = ", ".join(
+                    f"{field} = ?" for field in fields
+                )
 
-            conn.execute(
-                """
-                UPDATE users
-                SET profile_id = ?
-                WHERE id = ?
-                """,
-                (profile_id, user_id),
-            )
+                params = [values[field] for field in fields]
+                params.append(profile_id)
 
-        conn.commit()
-        return profile_id
+                conn.execute(
+                    f"""
+                    UPDATE {table}
+                    SET {assignments}
+                    WHERE id = ?
+                    """,
+                    params,
+                )
 
-    except Exception:
-        conn.rollback()
-        raise
+            else:
+                columns = ", ".join(fields)
+                placeholders = ", ".join(
+                    "?" for _ in fields
+                )
 
-    finally:
-        conn.close()
+                params = [values[field] for field in fields]
 
+                cursor = conn.execute(
+                    f"""
+                    INSERT INTO {table} ({columns})
+                    VALUES ({placeholders})
+                    """,
+                    params,
+                )
 
-# ==========================================
-# TEACHER PHOTOS
-# ==========================================
+                profile_id = cursor.lastrowid
+
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET profile_id = ?
+                    WHERE id = ?
+                    """,
+                    (profile_id, user_id),
+                )
+
+            conn.commit()
+            return profile_id
+
+        except Exception:
+            conn.rollback()
+            raise
+
 
 def get_photo(name):
     try:
