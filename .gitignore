@@ -1,0 +1,15 @@
+
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+*.sqlite
+*.db-journal
+.streamlit/secrets.toml
