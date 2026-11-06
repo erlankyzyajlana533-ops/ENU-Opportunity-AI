@@ -554,3 +554,15 @@ def get_users_count():
         """)
 
         return dict(cursor.fetchall())
+
+
+# ==========================================
+# DATABASE INITIALIZATION
+# ==========================================
+
+def initialize_database():
+    create_database()
+    create_requests_table()
+    create_chat_table()
+    create_account_links_table()
+    create_users_table()

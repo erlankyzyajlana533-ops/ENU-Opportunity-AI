@@ -10,7 +10,9 @@ from design import apply_design
 from teacher_photos import get_teacher_photo
 from ai_model import calculate_match, explain_match
 
+
 from database import (
+    initialize_database,
     create_database,
     get_students,
     get_teachers,
@@ -40,10 +42,8 @@ st.set_page_config(
 )
 
 apply_design()
-create_database()
-create_requests_table()
-create_chat_table()
-
+apply_design()
+initialize_database()
 # ==========================================
 # SESSION STATE
 # ==========================================
