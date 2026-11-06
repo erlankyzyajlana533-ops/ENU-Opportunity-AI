@@ -30,7 +30,7 @@ from database import (
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "enu_opportunity.db"
-API_URL = "http://127.0.0.1:8000"
+API_URL = "https://enu-opportunity-ai.onrender.com"
 
 st.set_page_config(
     page_title="ENU Opportunity AI",
