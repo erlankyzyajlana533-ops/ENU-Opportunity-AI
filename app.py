@@ -1,1270 +1,700 @@
 
 import sqlite3
+import re
 from pathlib import Path
+from datetime import datetime
 from html import escape
 
-import requests
 import streamlit as st
 
-from design import apply_design
-from teacher_photos import get_teacher_photo
-from ai_model import calculate_match, explain_match
-
-
-from database import (
-    initialize_database,
-    create_database,
-    get_students,
-    get_teachers,
-    get_student_requests,
-    get_teacher_requests,
-    send_request,
-    update_request_status,
-    create_requests_table,
-    create_chat_table,
-    send_chat_message,
-    get_chat_messages,
-    seed_demo_teachers,
-)
-
-# ==========================================
-# ENU OPPORTUNITY AI
-# ==========================================
-
-BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "enu_opportunity.db"
-API_URL = "https://enu-opportunity-ai.onrender.com"
+# =====================================
+# ENU OPPORTUNITY AI — DEMO MVP
+# =====================================
 
 st.set_page_config(
     page_title="ENU Opportunity AI",
     page_icon="🎓",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
+DB_PATH = Path(__file__).resolve().parent / "enu_demo.db"
+DEMO_PASSWORD = "Demo2026!"
 
-apply_design()
-initialize_database()
-# seed_demo_teachers()
-# ==========================================
-# SESSION STATE
-# ==========================================
+# =====================================
+# DESIGN
+# =====================================
 
-DEFAULTS = {
-    "current_user": None,
-    "access_token": None,
-    "active_page": "Басты бет",
-    "show_matches": False,
+st.markdown("""
+<style>
+.stApp {
+    background: linear-gradient(
+        120deg, #e5f6ff, #f8fbff, #dce7ff
+    );
 }
+[data-testid="stSidebar"] {
+    background: linear-gradient(
+        180deg, #061b46, #1059af
+    );
+}
+[data-testid="stSidebar"] * {
+    color: white;
+}
+h1, h2, h3 {
+    color: #102b57;
+}
+div.stButton > button[kind="primary"],
+div.stFormSubmitButton > button[kind="primary"] {
+    background: #ff4b52;
+    color: white;
+    border-radius: 10px;
+    border: none;
+}
+div[data-testid="stMetric"] {
+    background: rgba(255,255,255,0.7);
+    padding: 15px;
+    border-radius: 12px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-for key, value in DEFAULTS.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
+# =====================================
+# DATABASE
+# =====================================
 
-
-# ==========================================
-# API FUNCTIONS
-# ==========================================
-
-def api_request(method, endpoint, data=None):
-    headers = {}
-
-    token = st.session_state.access_token
-
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    try:
-        response = requests.request(
-            method,
-            f"{API_URL}{endpoint}",
-            json=data,
-            headers=headers,
-            timeout=15,
-        )
-
-        try:
-            result = response.json()
-        except ValueError:
-            result = {}
-
-        if response.status_code >= 400:
-            detail = result.get(
-                "detail",
-                f"API қатесі: {response.status_code}",
-            )
-            return False, detail
-
-        return True, result
-
-    except requests.RequestException:
-        return False, (
-            "API серверіне қосылу мүмкін болмады. "
-            "FastAPI серверін тексеріңіз."
-        )
-
-
-def api_register(name, email, password, role):
-    return api_request(
-        "POST",
-        "/auth/register",
-        {
-            "full_name": name,
-            "email": email,
-            "password": password,
-            "role": role,
-        },
-    )
-
-
-def api_me():
-    return api_request("GET", "/auth/me")
-
-
-def api_login(email, password):
-    success, result = api_request(
-        "POST",
-        "/auth/login",
-        {
-            "email": email,
-            "password": password,
-        },
-    )
-
-    if not success:
-        return False, result
-
-    token = result.get("access_token")
-
-    if not token:
-        return False, "Сессия токені алынбады"
-
-    st.session_state.access_token = token
-
-    verified, user = api_me()
-
-    if not verified:
-        st.session_state.access_token = None
-        return False, user
-
-    st.session_state.current_user = user
-    st.session_state.active_page = "Басты бет"
-
-    return True, "Кіру сәтті орындалды"
-
-
-def api_logout():
-    if st.session_state.access_token:
-        api_request("POST", "/auth/logout")
-
-    st.session_state.access_token = None
-    st.session_state.current_user = None
-    st.session_state.active_page = "Басты бет"
-    st.session_state.show_matches = False
-
-
-# ==========================================
-# DATABASE HELPERS
-# ==========================================
-
-def db_connection():
-    conn = sqlite3.connect(
-        str(DB_PATH),
-        timeout=10,
-    )
+def connect():
+    conn = sqlite3.connect(str(DB_PATH), timeout=20)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=20000")
     return conn
 
 
-def get_my_profile(user):
-    profile_id = user.get("profile_id")
+TEACHERS = [
+    (
+        "Демо оқытушы — AI",
+        "Жасанды интеллект, Machine Learning, Data Science, Python",
+        "Машиналық оқыту әдістері",
+        "Білім берудегі интеллектуалды жүйелер"
+    ),
+    (
+        "Демо оқытушы — IoT",
+        "IoT, Smart Farming, сенсорлар, Python",
+        "Заттар интернеті технологиялары",
+        "Ақылды жылыжай мониторингі"
+    ),
+    (
+        "Демо оқытушы — EdTech",
+        "EdTech, AI, білім беру, Python",
+        "Білім беруді цифрландыру",
+        "Инклюзивті білім беру платформасы"
+    )
+]
 
-    if not profile_id:
-        return None
 
-    if user["role"] == "student":
-        table = "students"
-    elif user["role"] == "teacher":
-        table = "teachers"
-    else:
-        return None
+def init_db():
+    with connect() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            major TEXT DEFAULT '',
+            course INTEGER DEFAULT 1,
+            skills TEXT DEFAULT '',
+            interests TEXT DEFAULT ''
+        );
 
-    with db_connection() as conn:
+        CREATE TABLE IF NOT EXISTS teachers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            research TEXT DEFAULT '',
+            articles TEXT DEFAULT '',
+            projects TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            teacher_id INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            status TEXT DEFAULT 'Күтуде',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL,
+            sender TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """)
+
+        for item in TEACHERS:
+            conn.execute("""
+                INSERT OR IGNORE INTO teachers
+                (name, research, articles, projects)
+                VALUES (?, ?, ?, ?)
+            """, item)
+
+
+init_db()
+
+
+def now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def get_teachers():
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM teachers ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_student(username):
+    with connect() as conn:
         row = conn.execute(
-            f"SELECT * FROM {table} WHERE id = ?",
-            (profile_id,),
+            "SELECT * FROM students WHERE username=?",
+            (username,)
         ).fetchone()
-
         return dict(row) if row else None
 
 
+def save_student(username, values):
+    with connect() as conn:
+        conn.execute("""
+            INSERT INTO students
+            (username, name, major, course, skills, interests)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                name=excluded.name,
+                major=excluded.major,
+                course=excluded.course,
+                skills=excluded.skills,
+                interests=excluded.interests
+        """, (
+            username,
+            values["name"],
+            values["major"],
+            values["course"],
+            values["skills"],
+            values["interests"]
+        ))
 
-def save_my_profile(user, values):
-    """Студент немесе оқытушы профилін сақтау."""
 
-    if not user:
-        raise ValueError("Жүйеге қайта кіріңіз")
+def get_student_requests(student_id):
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT r.*, t.name AS teacher_name
+            FROM requests r
+            JOIN teachers t ON t.id=r.teacher_id
+            WHERE r.student_id=?
+            ORDER BY r.id DESC
+        """, (student_id,)).fetchall()
+        return [dict(r) for r in rows]
 
-    user_id = user.get("id")
-    role = user.get("role")
 
-    if not user_id:
-        raise ValueError("Пайдаланушы ID табылмады")
+def get_teacher_requests(teacher_id):
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT r.*, s.name AS student_name,
+                   s.major, s.course, s.skills, s.interests
+            FROM requests r
+            JOIN students s ON s.id=r.student_id
+            WHERE r.teacher_id=?
+            ORDER BY r.id DESC
+        """, (teacher_id,)).fetchall()
+        return [dict(r) for r in rows]
 
-    if role == "student":
-        table = "students"
-        fields = [
-            "name",
-            "major",
-            "course",
-            "skills",
-            "interests",
-        ]
 
-    elif role == "teacher":
-        table = "teachers"
-        fields = [
-            "name",
-            "research",
-            "articles",
-            "projects",
-        ]
+def send_request(student_id, teacher_id, message):
+    with connect() as conn:
+        existing = conn.execute("""
+            SELECT id FROM requests
+            WHERE student_id=? AND teacher_id=?
+            AND status IN ('Күтуде', 'Қабылданды')
+        """, (student_id, teacher_id)).fetchone()
 
-    else:
-        raise ValueError("Пайдаланушы рөлі белгісіз")
+        if existing:
+            return False
 
-    for field in fields:
-        if field not in values:
-            raise ValueError(
-                f"Міндетті өріс жоқ: {field}"
+        conn.execute("""
+            INSERT INTO requests
+            (student_id, teacher_id, message, status, created_at)
+            VALUES (?, ?, ?, 'Күтуде', ?)
+        """, (student_id, teacher_id, message, now()))
+        return True
+
+
+def update_status(request_id, teacher_id, status):
+    if status not in ("Қабылданды", "Қабылданбады"):
+        return
+
+    with connect() as conn:
+        conn.execute("""
+            UPDATE requests SET status=?
+            WHERE id=? AND teacher_id=?
+            AND status='Күтуде'
+        """, (status, request_id, teacher_id))
+
+
+def get_messages(request_id):
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT * FROM messages
+            WHERE request_id=?
+            ORDER BY id
+        """, (request_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def send_message(request_id, sender, message, user):
+    with connect() as conn:
+        req = conn.execute("""
+            SELECT r.status, r.teacher_id, s.username
+            FROM requests r
+            JOIN students s ON s.id=r.student_id
+            WHERE r.id=?
+        """, (request_id,)).fetchone()
+
+        if not req or req["status"] != "Қабылданды":
+            raise ValueError("Чат қолжетімсіз")
+
+        if sender == "Студент":
+            allowed = (
+                user["role"] == "student"
+                and user["username"] == req["username"]
+            )
+        else:
+            allowed = (
+                user["role"] == "teacher"
+                and user["teacher_id"] == req["teacher_id"]
             )
 
-    with db_connection() as conn:
-        try:
-            conn.execute("BEGIN IMMEDIATE")
+        if not allowed:
+            raise ValueError("Чатқа рұқсат жоқ")
 
-            account = conn.execute(
-                """
-                SELECT id, role, profile_id
-                FROM users
-                WHERE id = ? AND is_active = 1
-                """,
-                (user_id,),
-            ).fetchone()
+        conn.execute("""
+            INSERT INTO messages
+            (request_id, sender, message, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (request_id, sender, message, now()))
 
-            if not account:
-                raise ValueError(
-                    "Аккаунт жергілікті базадан табылмады"
-                )
 
-            if account["role"] != role:
-                raise ValueError(
-                    "Аккаунт рөлі сәйкес келмейді"
-                )
+# =====================================
+# SESSION
+# =====================================
 
-            profile_id = account["profile_id"]
+if "current_user" not in st.session_state:
+    st.session_state.current_user = None
 
-            if profile_id:
-                existing = conn.execute(
-                    f"SELECT id FROM {table} WHERE id = ?",
-                    (profile_id,),
-                ).fetchone()
+if "show_matches" not in st.session_state:
+    st.session_state.show_matches = False
 
-                if not existing:
-                    raise ValueError(
-                        "Байланыстырылған профиль табылмады"
-                    )
+if "open_teacher_requests" not in st.session_state:
+    st.session_state.open_teacher_requests = False
 
-                assignments = ", ".join(
-                    f"{field} = ?" for field in fields
-                )
 
-                params = [values[field] for field in fields]
-                params.append(profile_id)
+# =====================================
+# LOGIN
+# =====================================
 
-                conn.execute(
-                    f"""
-                    UPDATE {table}
-                    SET {assignments}
-                    WHERE id = ?
-                    """,
-                    params,
-                )
+def show_login():
+    st.title("🎓 ENU Opportunity AI")
+    st.subheader(
+        "Студент пен ғылыми жетекшіні "
+        "интеллектуалды сәйкестендіру жүйесі"
+    )
+    st.info("🚀 Бірінші кезеңге арналған Demo MVP")
 
+    left, center, right = st.columns([1, 2, 1])
+
+    with center:
+        with st.container(border=True):
+            st.markdown("### 🔐 Демо жүйеге кіру")
+
+            role = st.radio(
+                "Рөлді таңдаңыз",
+                ["🎓 Студент", "👨‍🏫 Оқытушы"],
+                horizontal=True,
+                key="enu_login_role"
+            )
+
+            teachers = get_teachers()
+            teacher_id = None
+            chosen = ""
+
+            if role == "🎓 Студент":
+                username = "student"
             else:
-                columns = ", ".join(fields)
-                placeholders = ", ".join(
-                    "?" for _ in fields
+                chosen = st.selectbox(
+                    "Оқытушы аккаунты",
+                    [t["name"] for t in teachers],
+                    key="enu_teacher_selection"
+                )
+                teacher_id = next(
+                    t["id"] for t in teachers
+                    if t["name"] == chosen
+                )
+                username = "teacher"
+
+            st.caption("Демо аккаунт деректері")
+            st.code(
+                f"Логин: {username}\n"
+                f"Құпиясөз: {DEMO_PASSWORD}"
+            )
+
+            with st.form("enu_login_form"):
+                login = st.text_input(
+                    "Логин",
+                    value=username
+                )
+                password = st.text_input(
+                    "Құпиясөз",
+                    value=DEMO_PASSWORD,
+                    type="password"
+                )
+                submitted = st.form_submit_button(
+                    "🚀 Жүйеге кіру",
+                    type="primary",
+                    use_container_width=True
                 )
 
-                params = [values[field] for field in fields]
+            if submitted:
+                if login.strip() != username:
+                    st.error("Логин дұрыс емес")
+                elif password != DEMO_PASSWORD:
+                    st.error("Құпиясөз дұрыс емес")
+                else:
+                    is_student = role == "🎓 Студент"
 
-                cursor = conn.execute(
-                    f"""
-                    INSERT INTO {table} ({columns})
-                    VALUES ({placeholders})
-                    """,
-                    params,
-                )
+                    st.session_state.current_user = {
+                        "username": username,
+                        "role": (
+                            "student" if is_student
+                            else "teacher"
+                        ),
+                        "teacher_id": teacher_id,
+                        "full_name": (
+                            "Демо студент" if is_student
+                            else chosen
+                        )
+                    }
+                    st.session_state.show_matches = False
+                    st.rerun()
 
-                profile_id = cursor.lastrowid
-
-                conn.execute(
-                    """
-                    UPDATE users
-                    SET profile_id = ?
-                    WHERE id = ?
-                    """,
-                    (profile_id, user_id),
-                )
-
-            conn.commit()
-            return profile_id
-
-        except Exception:
-            conn.rollback()
-            raise  
-
-
-def get_photo(name):
-    try:
-        return get_teacher_photo(name)
-    except Exception:
-        return None
-
-
-def show_teacher_header(name, number=None):
-    photo = get_photo(name)
-
-    col1, col2 = st.columns(
-        [1, 7],
-        vertical_alignment="center",
+    st.caption(
+        "Демонстрациялық аккаунттар. "
+        "Нақты университеттік авторизация қосылмаған."
     )
 
-    with col1:
-        if photo is not None:
-            st.image(photo, width=85)
-        else:
-            st.markdown("### 👨‍🏫")
 
-    with col2:
-        prefix = f"{number}. " if number else ""
-        st.markdown(
-            f"### {prefix}{escape(str(name))}"
-        )
-        st.caption("Ғылыми жетекші")
+# =====================================
+# MATCHING ALGORITHM
+# =====================================
 
+ALIASES = {
+    "machine learning": "ml",
+    "машиналық оқыту": "ml",
+    "data science": "data",
+    "деректерді талдау": "data",
+    "жасанды интеллект": "ai",
+    "artificial intelligence": "ai",
+    "заттар интернеті": "iot",
+    "ақылды жылыжай": "iot",
+    "smart farming": "iot",
+    "білім беру": "edtech",
+    "инклюзивті": "edtech"
+}
 
-# ==========================================
-# LOGIN AND REGISTRATION
-# ==========================================
-
-# ==========================================
-# DEMO LOGIN
-# ==========================================
-
-DEMO_ACCOUNTS = {
-    "student": {
-        "password": "Demo2026!",
-        "role": "student",
-        "full_name": "Демо студент"
-    },
-    "teacher": {
-        "password": "Demo2026!",
-        "role": "teacher",
-        "full_name": "Демо оқытушы"
-    }
+STOP_WORDS = {
+    "мен", "және", "үшін", "the", "and",
+    "with", "бойынша", "туралы", "жоба"
 }
 
 
-def show_demo_login():
-    st.markdown("### 🚀 Демо нұсқаға кіру")
+def tokenize(value):
+    value = str(value or "").lower()
 
-    role = st.radio(
-        "Рөлді таңдаңыз",
-        ["🎓 Студент", "👨‍🏫 Оқытушы"],
-        horizontal=True,
-        key="demo_role"
-    )
-
-    login = (
-        "student"
-        if role == "🎓 Студент"
-        else "teacher"
-    )
-
-    st.info(
-        f"Логин: {login}\n\n"
-        "Пароль: Demo2026!"
-    )
-
-    if st.button(
-        "🚀 Демо ретінде кіру",
-        type="primary",
-        use_container_width=True
-    ):
-        account = DEMO_ACCOUNTS[login]
-
-        st.session_state.current_user = {
-            "id": -1 if login == "student" else -2,
-            "username": login,
-            "full_name": account["full_name"],
-            "role": account["role"],
-            "profile_id": None,
-            "is_demo": True
-        }
-
-        st.session_state.active_page = "Басты бет"
-        st.session_state.show_matches = False
-
-        st.rerun()
-
-def show_login():
-   show_demo_login() 
-   st.divider()
-   st.markdown(
-        """
-        <style>
-        .auth-banner {
-            background: linear-gradient(
-                120deg, #061d50, #075bc5
-            );
-            color: white;
-            border-radius: 20px;
-            padding: 32px;
-            text-align: center;
-            margin-bottom: 25px;
-        }
-
-        .auth-banner h1,
-        .auth-banner h2,
-        .auth-banner p {
-            color: white !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-   left, center, right = st.columns([1, 2, 1])
-   with center:
-        with st.container(border=True):
-
-            login_tab, register_tab = st.tabs([
-                "🔐 Жүйеге кіру",
-                "📝 Тіркелу",
-            ])
-
-            with login_tab:
-                st.subheader("Қош келдіңіз!")
-
-                with st.form("login_form"):
-                    email = st.text_input(
-                        "Электрондық пошта"
-                    )
-
-                    password = st.text_input(
-                        "Құпиясөз",
-                        type="password",
-                    )
-
-                    submitted = st.form_submit_button(
-                        "🔵 Жүйеге кіру",
-                        type="primary",
-                        use_container_width=True,
-                    )
-
-                if submitted:
-                    if not email or not password:
-                        st.warning(
-                            "Барлық өрістерді толтырыңыз"
-                        )
-                    else:
-                        success, message = api_login(
-                            email.strip().lower(),
-                            password,
-                        )
-
-                        if success:
-                            st.rerun()
-                        else:
-                            st.error(str(message))
-
-            with register_tab:
-                st.subheader("Жаңа аккаунт ашу")
-
-                with st.form("register_form"):
-                    name = st.text_input(
-                        "Аты-жөніңіз"
-                    )
-
-                    email = st.text_input(
-                        "Email",
-                        key="register_email",
-                    )
-
-                    role_label = st.radio(
-                        "Сіз кімсіз?",
-                        ["Студент", "Оқытушы"],
-                        horizontal=True,
-                    )
-
-                    password = st.text_input(
-                        "Құпиясөз",
-                        type="password",
-                        key="register_password",
-                    )
-
-                    confirm = st.text_input(
-                        "Құпиясөзді қайталаңыз",
-                        type="password",
-                    )
-
-                    submitted = st.form_submit_button(
-                        "📝 Тіркелу",
-                        type="primary",
-                        use_container_width=True,
-                    )
-
-                if submitted:
-                    if not all([
-                        name.strip(),
-                        email.strip(),
-                        password,
-                        confirm,
-                    ]):
-                        st.warning(
-                            "Барлық өрістерді толтырыңыз"
-                        )
-
-                    elif len(password) < 12:
-                        st.warning(
-                            "Құпиясөз кемінде 12 таңба "
-                            "болуы керек"
-                        )
-
-                    elif password != confirm:
-                        st.error(
-                            "Құпиясөздер сәйкес келмейді"
-                        )
-
-                    else:
-                        role = (
-                            "student"
-                            if role_label == "Студент"
-                            else "teacher"
-                        )
-
-                        success, result = api_register(
-                            name.strip(),
-                            email.strip().lower(),
-                            password,
-                            role,
-                        )
-
-                        if success:
-                            st.success(
-                                "Тіркелу сәтті аяқталды! "
-                                "Енді жүйеге кіріңіз."
-                            )
-                        else:
-                            st.error(str(result))
-
-            st.divider()
-
-            st.caption(
-                "SMART.ENU ресми кіру жүйесі "
-                "әзірге қосылмаған."
-            )
-            show_demo_login()
-   st.divider()
-# ==========================================
-# RESEARCH PLATFORMS
-# ==========================================
-
-RESEARCH_PLATFORMS = [
-    (
-        "Scopus",
-        "scopus.com",
-        "Ғылыми мақалалар мен дәйексөздер",
-        "https://www.scopus.com/",
-    ),
-    (
-        "Web of Science",
-        "webofscience.com",
-        "Ғылыми жарияланымдарды талдау",
-        "https://www.webofscience.com/",
-    ),
-    (
-        "Google Scholar",
-        "scholar.google.com",
-        "Ғылыми мақалаларды іздеу",
-        "https://scholar.google.com/",
-    ),
-    (
-        "ORCID",
-        "orcid.org",
-        "Зерттеушінің жеке идентификаторы",
-        "https://orcid.org/",
-    ),
-    (
-        "GitHub",
-        "github.com",
-        "Бағдарламалық жобалар",
-        "https://github.com/",
-    ),
-    (
-        "arXiv",
-        "arxiv.org",
-        "Ғылыми препринттер",
-        "https://arxiv.org/",
-    ),
-    (
-        "IEEE Xplore",
-        "ieeexplore.ieee.org",
-        "Инженерлік және IT зерттеулер",
-        "https://ieeexplore.ieee.org/",
-    ),
-    (
-        "ResearchGate",
-        "researchgate.net",
-        "Ғылыми қауымдастық",
-        "https://www.researchgate.net/",
-    ),
-    (
-        "DOAJ",
-        "doaj.org",
-        "Ашық ғылыми журналдар",
-        "https://doaj.org/",
-    ),
-]
-
-
-PROJECT_DIRECTIONS = [
-    (
-        "🤖 Жасанды интеллект",
-        "Машиналық оқыту және нейрондық желілер",
-    ),
-    (
-        "📊 Data Science",
-        "Деректерді талдау және болжау",
-    ),
-    (
-        "🔐 Киберқауіпсіздік",
-        "Ақпарат пен желілерді қорғау",
-    ),
-    (
-        "🌐 IoT",
-        "Ақылды құрылғылар және сенсорлар",
-    ),
-    (
-        "🎓 EdTech",
-        "Білім берудегі цифрлық технологиялар",
-    ),
-    (
-        "🦾 Робототехника",
-        "Роботтарды бағдарламалау",
-    ),
-]
-
-
-# ==========================================
-# RESEARCH RESOURCES UI
-# ==========================================
-
-def show_research_resources():
-    st.subheader("🔬 Ғылыми зерттеу кеңістігі")
-
-    st.caption(
-        "Ғылыми платформалар мен зерттеу ресурстары"
-    )
-
-    tab1, tab2 = st.tabs([
-        "🌐 Ғылыми платформалар",
-        "🚀 Жоба бағыттары",
-    ])
-
-    with tab1:
-        st.write(
-            "Ғылыми мақалаларды іздеуге, "
-            "зерттеуші профилін дамытуға және "
-            "жобаларды жариялауға арналған ресурстар."
+    for original, replacement in ALIASES.items():
+        value = value.replace(
+            original, f" {replacement} "
         )
 
-        for start in range(
-            0, len(RESEARCH_PLATFORMS), 3
-        ):
-            columns = st.columns(3)
+    words = re.findall(
+        r"[a-zа-яәғқңөұүһі0-9+#]+",
+        value
+    )
 
-            for col, item in zip(
-                columns,
-                RESEARCH_PLATFORMS[start:start + 3],
-            ):
-                name, domain, description, url = item
-
-                with col:
-                    with st.container(border=True):
-                        logo = (
-                            "https://www.google.com/"
-                            "s2/favicons?domain="
-                            f"{domain}&sz=128"
-                        )
-
-                        st.markdown(
-                            f"""
-                            <div style="
-                                height:110px;
-                                display:flex;
-                                align-items:center;
-                                justify-content:center;
-                                background:#eaf3ff;
-                                border-radius:12px;
-                            ">
-                                <img
-                                    src="{logo}"
-                                    width="65"
-                                    alt="{escape(name)}"
-                                >
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-                        st.markdown(f"### {name}")
-                        st.caption(description)
-
-                        with st.popover(
-                            "📖 Толық ақпарат",
-                            use_container_width=True,
-                        ):
-                            st.write(description)
-
-                            st.link_button(
-                                "🌐 Ресми сайт",
-                                url,
-                                use_container_width=True,
-                            )
-
-    with tab2:
-        for start in range(
-            0, len(PROJECT_DIRECTIONS), 3
-        ):
-            columns = st.columns(3)
-
-            for col, item in zip(
-                columns,
-                PROJECT_DIRECTIONS[start:start + 3],
-            ):
-                with col:
-                    with st.container(border=True):
-                        st.markdown(f"### {item[0]}")
-                        st.write(item[1])
-
-
-# ==========================================
-# STUDENT PROFILE
-# ==========================================
-st.session_state.show_matches = True
-
-# ==========================================
-# DEMO PROFILE STORAGE
-# ==========================================
-def save_demo_profile(user, values):
-    profile = {
-        "id": 1,
-        "name": values.get("name", ""),
-        "major": values.get("major", ""),
-        "course": values.get("course", 1),
-        "skills": values.get("skills", ""),
-        "interests": values.get("interests", "")
+    return {
+        word for word in words
+        if len(word) > 1 and word not in STOP_WORDS
     }
 
-    st.session_state.demo_student = profile
-    return profile["id"]
+
+def calculate_match(student, teacher):
+    student_text = " ".join([
+        str(student.get("skills", "")),
+        str(student.get("interests", ""))
+    ])
+
+    teacher_text = " ".join([
+        str(teacher.get("research", "")),
+        str(teacher.get("articles", "")),
+        str(teacher.get("projects", ""))
+    ])
+
+    a = tokenize(student_text)
+    b = tokenize(teacher_text)
+
+    if not a:
+        return 0.0, "Қызығушылықтар енгізілмеген."
+
+    common = a.intersection(b)
+    score = round(100 * len(common) / len(a), 1)
+
+    if common:
+        reason = (
+            "Ортақ ғылыми бағыттар мен дағдылар: "
+            + ", ".join(sorted(common))
+        )
+    else:
+        reason = (
+            "Тікелей ортақ кілт сөздер анықталмады. "
+            "Ғылыми бағыттарын қосымша қарастыруға болады."
+        )
+
+    return score, reason
 
 
-def get_demo_profile():
-    return st.session_state.get("demo_student")
+# =====================================
+# CHAT
+# =====================================
+
+def show_chat(request_id, role, user):
+    st.markdown("#### 💬 Жеке чат")
+
+    if st.button(
+        "🔄 Чатты жаңарту",
+        key=f"refresh_{role}_{request_id}"
+    ):
+        st.rerun()
+
+    messages = get_messages(request_id)
+
+    with st.container(height=260, border=True):
+        if not messages:
+            st.info("Әзірге хабарламалар жоқ")
+
+        for msg in messages:
+            with st.chat_message(
+                "user" if msg["sender"] == role
+                else "assistant"
+            ):
+                st.caption(msg["sender"])
+                st.write(msg["message"])
+                st.caption(msg["created_at"])
+
+    with st.form(
+        f"chat_form_{role}_{request_id}",
+        clear_on_submit=True
+    ):
+        message = st.text_input(
+            "Хабарламаңызды жазыңыз"
+        )
+        submitted = st.form_submit_button("📤 Жіберу")
+
+    if submitted:
+        if message.strip():
+            try:
+                send_message(
+                    request_id,
+                    role,
+                    message.strip(),
+                    user
+                )
+                st.rerun()
+            except ValueError as error:
+                st.error(str(error))
+        else:
+            st.warning("Хабарлама бос болмауы керек")
+
+
+# =====================================
+# STUDENT PROFILE
+# =====================================
 
 def show_student_profile(user):
-    st.subheader("📋 Менің профилім")
+    profile = get_student(user["username"])
 
-    profile = get_my_profile(user)
+    st.subheader("📋 Студент профилі")
 
-    if profile is None:
-        st.info(
-            "Ғылыми жетекші табу үшін "
-            "профиліңізді толтырыңыз."
-        )
-
-    with st.form("student_profile_form"):
+    with st.form("enu_student_profile"):
         name = st.text_input(
             "Аты-жөні",
-            value=(
-                profile["name"]
-                if profile
-                else user["full_name"]
-            ),
+            value=profile["name"] if profile else ""
         )
-
         major = st.text_input(
             "Мамандығы",
-            value=(
-                profile.get("major") or ""
-                if profile else ""
-            ),
+            value=profile["major"] if profile
+            else "Информатика"
         )
-
         course = st.number_input(
             "Курс",
             min_value=1,
             max_value=8,
-            value=(
-                int(profile.get("course") or 1)
-                if profile else 1
-            ),
+            value=int(profile["course"]) if profile else 4
         )
-
         skills = st.text_area(
             "Дағдылар",
-            value=(
-                profile.get("skills") or ""
-                if profile else ""
-            ),
-            placeholder="Python, Machine Learning",
+            value=profile["skills"] if profile else "",
+            placeholder="Python, Machine Learning, IoT"
         )
-
         interests = st.text_area(
             "Ғылыми қызығушылықтар",
-            value=(
-                profile.get("interests") or ""
-                if profile else ""
-            ),
-            placeholder="AI, Data Science, IoT",
+            value=profile["interests"] if profile else "",
+            placeholder="AI, Data Science, Smart Farming"
         )
 
         submitted = st.form_submit_button(
             "💾 Профильді сақтау",
-            type="primary",
-        )
-        if submitted:
-            if not name.strip():
-                st.warning("Аты-жөніңізді енгізіңіз")
-                return
-
-        try:
-            profile_id = save_demo_profile(
-                user,
-                {
-                    "name": name.strip(),
-                    "major": major.strip(),
-                    "course": int(course),
-                    "skills": skills.strip(),
-                    "interests": interests.strip(),
-                },
-            )
-
-            st.session_state.current_user[
-                "profile_id"
-            ] = profile_id
-
-            st.session_state.show_matches = True
-
-            st.success("✅ Демо профиль сақталды!")
-            st.rerun()
-
-        except Exception as error:
-            st.error(f"Сақтау қатесі: {error}")
-
-
-
-# ==========================================
-# TEACHER PROFILE
-# ==========================================
-
-def show_teacher_profile(user):
-    st.subheader("📋 Оқытушы профилі")
-
-    profile = get_my_profile(user)
-
-    if profile:
-        show_teacher_header(profile["name"])
-
-    with st.form("teacher_profile_form"):
-        name = st.text_input(
-            "Аты-жөні",
-            value=(
-                profile["name"]
-                if profile
-                else user["full_name"]
-            ),
-        )
-
-        research = st.text_area(
-            "Ғылыми бағыттары",
-            value=(
-                profile.get("research") or ""
-                if profile else ""
-            ),
-        )
-
-        articles = st.text_area(
-            "Ғылыми мақалалары",
-            value=(
-                profile.get("articles") or ""
-                if profile else ""
-            ),
-        )
-
-        projects = st.text_area(
-            "Ғылыми жобалары",
-            value=(
-                profile.get("projects") or ""
-                if profile else ""
-            ),
-        )
-
-        submitted = st.form_submit_button(
-            "💾 Профильді сақтау",
-            type="primary",
+            type="primary"
         )
 
     if submitted:
         if not name.strip():
             st.warning("Аты-жөніңізді енгізіңіз")
-            return
-
-        try:
-            profile_id = save_my_profile(
-                user,
-                {
-                    "name": name.strip(),
-                    "research": research.strip(),
-                    "articles": articles.strip(),
-                    "projects": projects.strip(),
-                },
-            )
-
-            st.session_state.current_user[
-                "profile_id"
-            ] = profile_id
-
+        else:
+            save_student(user["username"], {
+                "name": name.strip(),
+                "major": major.strip(),
+                "course": int(course),
+                "skills": skills.strip(),
+                "interests": interests.strip()
+            })
+            st.session_state.show_matches = True
             st.success("Профиль сақталды!")
             st.rerun()
 
-        except Exception as error:
-            st.error(f"Сақтау қатесі: {error}")
 
+# =====================================
+# TEACHER MATCHES
+# =====================================
 
-# ==========================================
-# AI MATCHING
-# ==========================================
-
-def show_student_matches(student):
-    teachers = get_teachers()
-
-    if not teachers:
-        st.warning("Оқытушылар базасы бос")
-        return
-
-    student_text = (
-        f"{student.get('interests') or ''}. "
-        f"{student.get('skills') or ''}"
+def show_matches(student):
+    st.subheader("🤖 Ұсынылған ғылыми жетекшілер")
+    st.caption(
+        "Сәйкестік пайызы ортақ кілт сөздер "
+        "негізінде есептеледі. Демо алгоритм."
     )
 
     results = []
 
-    with st.spinner("🤖 ЖИ сәйкестікті есептеуде..."):
-        for teacher in teachers:
-            teacher_text = (
-                f"{teacher.get('research') or ''}. "
-                f"{teacher.get('articles') or ''}. "
-                f"{teacher.get('projects') or ''}"
-            )
-
-            if not teacher_text.strip(" ."):
-                continue
-
-            score = calculate_match(
-                student_text,
-                teacher_text,
-            )
-
-            explanation = explain_match(
-                student_text,
-                teacher_text,
-            )
-
-            results.append(
-                (teacher, float(score), explanation)
-            )
+    for teacher in get_teachers():
+        score, reason = calculate_match(student, teacher)
+        results.append((teacher, score, reason))
 
     results.sort(
         key=lambda item: item[1],
-        reverse=True,
+        reverse=True
     )
 
-    st.subheader("🤖 ЖИ сәйкестендіру нәтижелері")
-
-    for index, item in enumerate(
-        results[:3],
-        start=1,
+    for index, (teacher, score, reason) in enumerate(
+        results[:3], 1
     ):
-        teacher, score, explanation = item
-
         with st.container(border=True):
-            show_teacher_header(
-                teacher["name"],
-                index,
+            st.markdown(
+                f"### {index}. 👨‍🏫 {escape(teacher['name'])}"
             )
 
-            st.metric(
-                "Мағыналық ұқсастық",
-                f"{score:.1f}%",
-            )
-
+            st.metric("Сәйкестік", f"{score:.1f}%")
             st.progress(
-                max(0.0, min(1.0, score / 100))
+                min(1.0, max(0.0, score / 100))
             )
 
             st.write(
                 "**🔬 Ғылыми бағыты:**",
-                teacher.get("research")
-                or "Көрсетілмеген",
+                teacher["research"]
             )
-
             st.write(
-                "**📚 Жобалары:**",
-                teacher.get("projects")
-                or "Көрсетілмеген",
+                "**📚 Зерттеулері:**",
+                teacher["articles"]
+            )
+            st.write(
+                "**🚀 Жобалары:**",
+                teacher["projects"]
             )
 
-            with st.expander(
-                "💡 Неліктен ұсынылды?"
-            ):
-                st.write(explanation)
+            with st.expander("💡 Неліктен ұсынылды?"):
+                st.write(reason)
 
-            message = st.text_area(
-                "Ғылыми жетекшіге хабарлама",
-                key=(
-                    f"msg_{student['id']}_"
-                    f"{teacher['id']}"
-                ),
-            )
-
-            if st.button(
-                "📨 Өтінім жіберу",
-                key=(
-                    f"send_{student['id']}_"
-                    f"{teacher['id']}"
-                ),
-                type="primary",
-            ):
-                if not message.strip():
-                    st.warning("Хабарлама жазыңыз")
-                else:
-                    success = send_request(
-                        student["id"],
-                        teacher["id"],
-                        message.strip(),
+            with st.form(f"request_form_{teacher['id']}"):
+                message = st.text_area(
+                    "Оқытушыға хабарлама",
+                    value=(
+                        "Сәлеметсіз бе! Сізді ғылыми жетекші "
+                        "ретінде таңдағым келеді. "
+                        "Ғылыми жобам бойынша бірге "
+                        "жұмыс істеуге ұсыныс білдіремін."
                     )
-
-                    if success:
-                        st.success("Өтінім жіберілді!")
-                    else:
-                        st.info(
-                            "Бұл оқытушыға күтілудегі "
-                            "өтінім бар."
-                        )
-
-
-# ==========================================
-# PRIVATE CHAT
-# ==========================================
-
-def show_chat(request_id, role, teacher_name):
-    st.markdown("### 💬 Жеке чат")
-
-    show_teacher_header(teacher_name)
-
-    if st.button(
-        "🔄 Жаңарту",
-        key=f"refresh_{role}_{request_id}",
-    ):
-        st.rerun()
-
-    messages = get_chat_messages(request_id)
-
-    with st.container(height=350, border=True):
-        for msg in messages:
-            sender = msg["sender_role"]
-
-            avatar = "🎓"
-
-            if sender == "Оқытушы":
-                avatar = (
-                    get_photo(teacher_name)
-                    or "👨‍🏫"
+                )
+                submitted = st.form_submit_button(
+                    "📨 Өтінім жіберу",
+                    type="primary"
                 )
 
-            with st.chat_message(
-                "user"
-                if sender == role
-                else "assistant",
-                avatar=avatar,
-            ):
-                st.caption(sender)
-                st.write(msg["message"])
-                st.caption(str(msg["created_at"]))
-
-    with st.form(
-        f"chat_{role}_{request_id}",
-        clear_on_submit=True,
-    ):
-        message = st.text_area(
-            "Хабарлама",
-            placeholder="Хабарламаңызды жазыңыз...",
-        )
-
-        submitted = st.form_submit_button(
-            "📤 Жіберу"
-        )
-
-    if submitted:
-        if not message.strip():
-            st.warning("Хабарлама бос")
-
-        elif send_chat_message(
-            request_id,
-            role,
-            message.strip(),
-        ):
-            st.rerun()
-
-        else:
-            st.error("Хабарлама жіберілмеді")
+            if submitted:
+                if not message.strip():
+                    st.warning("Хабарлама енгізіңіз")
+                elif send_request(
+                    student["id"],
+                    teacher["id"],
+                    message.strip()
+                ):
+                    st.success("Өтінім жіберілді!")
+                    st.rerun()
+                else:
+                    st.warning(
+                        "Бұл оқытушыға белсенді өтінім бар."
+                    )
 
 
-# ==========================================
+# =====================================
 # STUDENT DASHBOARD
-# ==========================================
+# =====================================
 
-
-# ==========================================
-# STUDENT DASHBOARD
-# ==========================================
-
-def show_student_dashboard():
-    user = st.session_state.current_user
-
+def show_student_dashboard(user):
     st.header("🎓 Студент кабинеті")
 
-    # Студент профилі
     show_student_profile(user)
+    student = get_student(user["username"])
 
-    # Сақталған профильді алу
-    try:
-        student = get_demo_profile()
-    except Exception as error:
-        st.error(f"Профильді алу қатесі: {error}")
-        return
-
-    if student is None:
+    if not student:
         st.info(
-            "Ғылыми жетекшілерді көру үшін "
+            "Ғылыми жетекші табу үшін "
             "алдымен профиліңізді сақтаңыз."
         )
         return
 
     st.divider()
 
-    st.success("✅ Студент профилі дайын!")
-
-    # Ғылыми жетекшілерді іздеу
-    st.subheader("🤖 ЖИ ұсынған ғылыми жетекшілер")
-
     if st.button(
-        "🔍 Маған сәйкес оқытушыларды табу",
+        "🔍 Маған сәйкес ғылыми жетекшілерді табу",
         type="primary",
-        use_container_width=True,
+        use_container_width=True
     ):
         st.session_state.show_matches = True
 
-    if st.session_state.get("show_matches", False):
-        try:
-            show_student_matches(student)
-        except Exception as error:
-            st.error(
-                f"Оқытушыларды іздеу қатесі: {error}"
-            )
+    if st.session_state.show_matches:
+        show_matches(student)
 
     st.divider()
-
-    # Студенттің өтінімдері
     st.subheader("📨 Менің өтінімдерім")
 
-    try:
-        requests_list = get_student_requests(
-            student["id"]
-        )
-    except Exception as error:
-        st.error(
-            f"Өтінімдерді алу қатесі: {error}"
-        )
-        return
-
-    if not requests_list:
-        st.info("Әзірге өтінімдер жоқ")
-
-    for req in requests_list:
-        with st.container(border=True):
-
-            teacher_name = req["teacher_name"]
-
-            show_teacher_header(teacher_name)
-
-            st.write(
-                "**Мәртебесі:**",
-                req["status"],
-            )
-
-            if req["status"] == "Қабылданды":
-                show_chat(
-                    req["id"],
-                    "Студент",
-                    teacher_name,
-                )
-
-            elif req["status"] == "Күтуде":
-                st.warning("Жауап күтілуде")
-
-            else:
-                st.error("Өтінім қабылданбады")
-
-
-
-# ==========================================
-# TEACHER DASHBOARD
-# ==========================================
-
-def show_teacher_dashboard():
-    user = st.session_state.current_user
-
-    st.header("👨‍🏫 Оқытушы кабинеті")
-
-    show_teacher_profile(user)
-
-    teacher = get_my_profile(user)
-
-    if teacher is None:
-        return
-
-    st.divider()
-    st.subheader("📥 Маған келген өтінімдер")
-
-    requests_list = get_teacher_requests(
-        teacher["id"]
-    )
+    requests_list = get_student_requests(student["id"])
 
     if not requests_list:
         st.info("Әзірге өтінімдер жоқ")
@@ -1272,123 +702,295 @@ def show_teacher_dashboard():
     for req in requests_list:
         with st.container(border=True):
             st.markdown(
-                "### 🎓 "
-                + escape(str(req["student_name"]))
+                f"### 👨‍🏫 {escape(req['teacher_name'])}"
             )
-
-            st.write(
-                "**Мамандығы:**",
-                req["major"],
-            )
-
-            st.write(
-                "**Курс:**",
-                req["course"],
-            )
-
-            st.write(
-                "**Дағдылары:**",
-                req["skills"],
-            )
-
-            st.write(
-                "**Қызығушылықтары:**",
-                req["interests"],
-            )
-
-            st.write(
-                "**Хабарлама:**",
-                req["message"],
-            )
-
-            st.write(
-                "**Мәртебесі:**",
-                req["status"],
-            )
+            st.write("**Өтінім:**", req["message"])
+            st.write("**Мәртебесі:**", req["status"])
 
             if req["status"] == "Күтуде":
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    if st.button(
-                        "✅ Қабылдау",
-                        key=f"accept_{req['id']}",
-                    ):
-                        update_request_status(
-                            req["id"],
-                            teacher["id"],
-                            "Қабылданды",
-                        )
-                        st.rerun()
-
-                with col2:
-                    if st.button(
-                        "❌ Қабылдамау",
-                        key=f"reject_{req['id']}",
-                    ):
-                        update_request_status(
-                            req["id"],
-                            teacher["id"],
-                            "Қабылданбады",
-                        )
-                        st.rerun()
+                st.warning("⏳ Оқытушы жауабы күтілуде")
 
             elif req["status"] == "Қабылданды":
-                show_chat(
-                    req["id"],
-                    "Оқытушы",
-                    teacher["name"],
-                )
+                st.success("✅ Өтінім қабылданды!")
+                show_chat(req["id"], "Студент", user)
+
+            else:
+                st.error("❌ Өтінім қабылданбады")
 
 
-# ==========================================
-# HOME PAGE
-# ==========================================
+# =====================================
+# TEACHER DASHBOARD
+# =====================================
 
-def show_home(user):
-    
+def show_teacher_dashboard(user):
+    st.header("👨‍🏫 Оқытушы кабинеті")
 
-    st.title("🎓 ENU Opportunity AI")
+    teacher_id = user["teacher_id"]
 
-    st.subheader(
-        "Студент пен ғылыми жетекшіні "
-        "интеллектуалды сәйкестендіру жүйесі"
+    teacher = next(
+        (
+            t for t in get_teachers()
+            if t["id"] == teacher_id
+        ),
+        None
     )
 
-    st.success(
-        f"Қош келдіңіз, {user['full_name']}!"
+    if not teacher:
+        st.error("Оқытушы табылмады")
+        return
+
+    st.subheader(teacher["name"])
+    st.write(
+        "**Ғылыми бағыттары:**",
+        teacher["research"]
+    )
+    st.write(
+        "**Жобалары:**",
+        teacher["projects"]
+    )
+
+    st.divider()
+    st.subheader("🔔 Хабарламалар")
+
+    requests_list = get_teacher_requests(teacher_id)
+
+    pending = [
+        req for req in requests_list
+        if req["status"] == "Күтуде"
+    ]
+
+    if pending:
+        st.warning(
+            f"📩 Сізге {len(pending)} жаңа өтінім келді!"
+        )
+    else:
+        st.info("Қазір жаңа өтінімдер жоқ")
+
+    if st.button(
+        "📥 Өтінімдерді ашу",
+        type="primary",
+        use_container_width=True
+    ):
+        st.session_state.open_teacher_requests = True
+
+    if st.session_state.open_teacher_requests:
+        st.subheader("📥 Студенттерден келген өтінімдер")
+
+        if not requests_list:
+            st.info("Әзірге өтінімдер жоқ")
+
+        for req in requests_list:
+            with st.container(border=True):
+                st.markdown(
+                    f"### 🎓 {escape(req['student_name'])}"
+                )
+
+                st.write(
+                    "Сізді ғылыми жетекші ретінде таңдады!"
+                )
+                st.write("**Мамандығы:**", req["major"])
+                st.write("**Курс:**", req["course"])
+                st.write("**Дағдылары:**", req["skills"])
+                st.write(
+                    "**Қызығушылықтары:**",
+                    req["interests"]
+                )
+                st.write("**Өтінім:**", req["message"])
+                st.write("**Мәртебесі:**", req["status"])
+
+                if req["status"] == "Күтуде":
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        if st.button(
+                            "✅ Қабылдау",
+                            key=f"accept_{req['id']}"
+                        ):
+                            update_status(
+                                req["id"],
+                                teacher_id,
+                                "Қабылданды"
+                            )
+                            st.rerun()
+
+                    with col2:
+                        if st.button(
+                            "❌ Қабылдамау",
+                            key=f"reject_{req['id']}"
+                        ):
+                            update_status(
+                                req["id"],
+                                teacher_id,
+                                "Қабылданбады"
+                            )
+                            st.rerun()
+
+                elif req["status"] == "Қабылданды":
+                    st.success("Өтінім қабылданды!")
+                    show_chat(req["id"], "Оқытушы", user)
+
+                else:
+                    st.error("Өтінім қабылданбады")
+
+
+# =====================================
+# RESEARCH RESOURCES
+# =====================================
+
+RESEARCH_PLATFORMS = [
+    ("Scopus", "https://www.scopus.com/"),
+    ("Web of Science", "https://www.webofscience.com/"),
+    ("Google Scholar", "https://scholar.google.com/"),
+    ("ORCID", "https://orcid.org/"),
+    ("GitHub", "https://github.com/"),
+    ("arXiv", "https://arxiv.org/")
+]
+
+PROJECT_DIRECTIONS = [
+    ("🤖 Жасанды интеллект", "Машиналық оқыту"),
+    ("📊 Data Science", "Деректерді талдау"),
+    ("🔐 Киберқауіпсіздік", "Ақпаратты қорғау"),
+    ("🌐 IoT", "Ақылды құрылғылар"),
+    ("🎓 EdTech", "Білім беру технологиялары"),
+    ("🦾 Робототехника", "Роботтарды бағдарламалау")
+]
+
+
+def show_research_resources():
+    st.subheader("🔬 Ғылыми зерттеу кеңістігі")
+
+    tab1, tab2 = st.tabs([
+        "🌐 Ғылыми платформалар",
+        "🚀 Жоба бағыттары"
+    ])
+
+    with tab1:
+        for start in range(
+            0, len(RESEARCH_PLATFORMS), 3
+        ):
+            cols = st.columns(3)
+
+            for col, (name, url) in zip(
+                cols,
+                RESEARCH_PLATFORMS[start:start + 3]
+            ):
+                with col:
+                    with st.container(border=True):
+                        st.markdown(f"### {name}")
+                        st.link_button(
+                            "🌐 Ресми сайт",
+                            url,
+                            use_container_width=True
+                        )
+
+    with tab2:
+        for start in range(
+            0, len(PROJECT_DIRECTIONS), 3
+        ):
+            cols = st.columns(3)
+
+            for col, (name, description) in zip(
+                cols,
+                PROJECT_DIRECTIONS[start:start + 3]
+            ):
+                with col:
+                    with st.container(border=True):
+                        st.markdown(f"### {name}")
+                        st.write(description)
+
+
+# =====================================
+# HOME PAGE
+# =====================================
+
+def show_home(user):
+    st.html("""
+    <div style="
+        background: linear-gradient(
+            120deg, #061b46, #1764b5
+        );
+        border-radius: 22px;
+        padding: 42px;
+        min-height: 210px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        box-shadow: 0 8px 28px rgba(0,30,80,0.18);
+        margin-bottom: 25px;
+    ">
+        <div style="
+            color: #c5dcff;
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        ">
+            🎓 ENU Opportunity AI
+        </div>
+
+        <div style="
+            color: white;
+            font-size: clamp(26px, 3.5vw, 44px);
+            font-weight: 800;
+            line-height: 1.2;
+            margin-bottom: 14px;
+        ">
+            БІЗ АЛМАЙТЫН АСУ ЖОҚ!
+        </div>
+
+        <div style="
+            color: #e1edff;
+            font-size: 16px;
+            line-height: 1.6;
+        ">
+            Студент пен ғылыми жетекшіні
+            интеллектуалды сәйкестендіру жүйесі
+        </div>
+    </div>
+    """)
+
+    full_name = escape(str(user["full_name"]))
+
+    st.markdown(
+        f"""
+        <div style="
+            background: linear-gradient(
+                90deg, #d6f5ed, #dceeff
+            );
+            padding: 18px 24px;
+            border-radius: 14px;
+            color: #17644b;
+            font-size: 17px;
+            font-weight: 600;
+        ">
+            👋 Қош келдіңіз, {full_name}!
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
     st.write(
-        "Жасанды интеллект арқылы ғылыми "
+        "Ғылыми қызығушылықтарыңызға сәйкес "
         "жетекшілерді табыңыз, өтінім жіберіңіз "
         "және ғылыми байланыс орнатыңыз."
     )
 
+    with connect() as conn:
+        students_count = conn.execute(
+            "SELECT COUNT(*) FROM students"
+        ).fetchone()[0]
+
+        teachers_count = conn.execute(
+            "SELECT COUNT(*) FROM teachers"
+        ).fetchone()[0]
+
     col1, col2, col3 = st.columns(3)
 
-    with col1:
-        st.metric(
-            "🎓 Студенттер",
-            len(get_students()),
-        )
-
-    with col2:
-        st.metric(
-            "👨‍🏫 Оқытушылар",
-            len(get_teachers()),
-        )
-
-    with col3:
-        st.metric(
-            "🤖 ЖИ моделі",
-            "MiniLM",
-        )
+    col1.metric("🎓 Студенттер", students_count)
+    col2.metric("👨‍🏫 Оқытушылар", teachers_count)
+    col3.metric("🤖 Сәйкестендіру", "Demo AI")
 
     st.divider()
-
     show_research_resources()
-
     st.divider()
 
     if user["role"] == "student":
@@ -1396,7 +998,6 @@ def show_home(user):
             "Ғылыми жетекші табу үшін "
             "«Студент кабинеті» бөліміне өтіңіз."
         )
-
     else:
         st.info(
             "Өтінімдерді қарау үшін "
@@ -1404,95 +1005,64 @@ def show_home(user):
         )
 
 
-# ==========================================
+# =====================================
 # SIDEBAR
-# ==========================================
+# =====================================
 
 def show_sidebar(user):
     with st.sidebar:
         st.title("🎓 ENU Opportunity AI")
         st.caption("L.N. Gumilyov ENU")
-
         st.divider()
 
-        st.write(
-            f"👤 **{user['full_name']}**"
-        )
-
-        role = user["role"]
+        st.write(f"👤 **{user['full_name']}**")
 
         st.caption(
-            "Студент"
-            if role == "student"
+            "Студент" if user["role"] == "student"
             else "Оқытушы"
         )
 
         pages = ["Басты бет"]
 
-        if role == "student":
+        if user["role"] == "student":
             pages.append("Студент кабинеті")
-
-        elif role == "teacher":
+        else:
             pages.append("Оқытушы кабинеті")
-
-        current = st.session_state.active_page
 
         selected = st.radio(
             "Навигация",
             pages,
-            index=(
-                pages.index(current)
-                if current in pages
-                else 0
-            ),
+            key="enu_sidebar_navigation"
         )
-
-        st.session_state.active_page = selected
 
         st.divider()
 
         if st.button(
             "🚪 Жүйеден шығу",
-            use_container_width=True,
+            use_container_width=True
         ):
-            api_logout()
+            st.session_state.current_user = None
+            st.session_state.show_matches = False
+            st.session_state.open_teacher_requests = False
+            st.session_state.pop(
+                "enu_sidebar_navigation", None
+            )
             st.rerun()
 
-        st.caption(
-            "ENU Opportunity AI | Demo MVP"
-        )
+        st.caption("ENU Opportunity AI | Demo MVP")
 
     return selected
 
 
-# ==========================================
+# =====================================
 # MAIN
-# ==========================================
+# =====================================
 
 def main():
-    if not st.session_state.access_token:
+    user = st.session_state.current_user
+
+    if user is None:
         show_login()
-        return
-
-    success, user = api_me()
-
-    if not success:
-        api_logout()
-
-        st.warning(
-            "Сессия аяқталды. Қайта кіріңіз."
-        )
-
-        show_login()
-        return
-
-    st.session_state.current_user = user
-
-    if user.get("role") not in (
-        "student",
-        "teacher",
-    ):
-        st.error("Рөлге рұқсат жоқ")
         return
 
     page = show_sidebar(user)
@@ -1500,24 +1070,17 @@ def main():
     if page == "Басты бет":
         show_home(user)
 
-    elif (
-        page == "Студент кабинеті"
-        and user["role"] == "student"
-    ):
-        show_student_dashboard()
+    elif page == "Студент кабинеті":
+        show_student_dashboard(user)
 
-    elif (
-        page == "Оқытушы кабинеті"
-        and user["role"] == "teacher"
-    ):
-        show_teacher_dashboard()
+    elif page == "Оқытушы кабинеті":
+        show_teacher_dashboard(user)
 
     st.divider()
-
     st.caption(
         "ENU Opportunity AI | "
-        "Ғылыми жетекшілерді интеллектуалды "
-        "сәйкестендіру платформасы"
+        "Ғылыми жетекшілерді сәйкестендіру "
+        "демонстрациялық платформасы"
     )
 
 
