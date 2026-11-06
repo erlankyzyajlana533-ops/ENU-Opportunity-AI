@@ -24,6 +24,7 @@ from database import (
     create_chat_table,
     send_chat_message,
     get_chat_messages,
+    seed_demo_teachers,
 )
 
 # ==========================================
@@ -41,9 +42,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-apply_design()
+
 apply_design()
 initialize_database()
+seed_demo_teachers()
+
 # ==========================================
 # SESSION STATE
 # ==========================================
@@ -358,6 +361,66 @@ def show_teacher_header(name, number=None):
 # LOGIN AND REGISTRATION
 # ==========================================
 
+# ==========================================
+# DEMO LOGIN
+# ==========================================
+
+DEMO_ACCOUNTS = {
+    "student": {
+        "password": "Demo2026!",
+        "role": "student",
+        "full_name": "Демо студент"
+    },
+    "teacher": {
+        "password": "Demo2026!",
+        "role": "teacher",
+        "full_name": "Демо оқытушы"
+    }
+}
+
+
+def show_demo_login():
+    st.markdown("### 🚀 Демо нұсқаға кіру")
+
+    role = st.radio(
+        "Рөлді таңдаңыз",
+        ["🎓 Студент", "👨‍🏫 Оқытушы"],
+        horizontal=True,
+        key="demo_role"
+    )
+
+    login = (
+        "student"
+        if role == "🎓 Студент"
+        else "teacher"
+    )
+
+    st.info(
+        f"Логин: {login}\n\n"
+        "Пароль: Demo2026!"
+    )
+
+    if st.button(
+        "🚀 Демо ретінде кіру",
+        type="primary",
+        use_container_width=True
+    ):
+        account = DEMO_ACCOUNTS[login]
+
+        st.session_state.current_user = {
+            "id": -1 if login == "student" else -2,
+            "username": login,
+            "full_name": account["full_name"],
+            "role": account["role"],
+            "profile_id": None,
+            "is_demo": True
+        }
+
+        st.session_state.active_page = "Басты бет"
+        st.session_state.show_matches = False
+
+        st.rerun()
+
 def show_login():
     st.markdown(
         """
@@ -516,7 +579,8 @@ def show_login():
                 "әзірге қосылмаған."
             )
 
-
+    show_demo_login()
+    st.divider()
 # ==========================================
 # RESEARCH PLATFORMS
 # ==========================================
