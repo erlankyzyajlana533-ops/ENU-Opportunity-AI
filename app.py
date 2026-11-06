@@ -704,6 +704,27 @@ def show_research_resources():
 # STUDENT PROFILE
 # ==========================================
 st.session_state.show_matches = True
+
+# ==========================================
+# DEMO PROFILE STORAGE
+# ==========================================
+def save_demo_profile(user, values):
+    profile = {
+        "id": 1,
+        "name": values.get("name", ""),
+        "major": values.get("major", ""),
+        "course": values.get("course", 1),
+        "skills": values.get("skills", ""),
+        "interests": values.get("interests", "")
+    }
+
+    st.session_state.demo_student = profile
+    return profile["id"]
+
+
+def get_demo_profile():
+    return st.session_state.get("demo_student")
+
 def show_student_profile(user):
     st.subheader("📋 Менің профилім")
 
@@ -765,14 +786,13 @@ def show_student_profile(user):
             "💾 Профильді сақтау",
             type="primary",
         )
-
-    if submitted:
+        if submitted:
         if not name.strip():
             st.warning("Аты-жөніңізді енгізіңіз")
             return
 
         try:
-            profile_id = save_my_profile(
+            profile_id = save_demo_profile(
                 user,
                 {
                     "name": name.strip(),
@@ -787,11 +807,14 @@ def show_student_profile(user):
                 "profile_id"
             ] = profile_id
 
-            st.success("Профиль сақталды!")
+            st.session_state.show_matches = True
+
+            st.success("✅ Демо профиль сақталды!")
             st.rerun()
 
         except Exception as error:
             st.error(f"Сақтау қатесі: {error}")
+
 
 
 # ==========================================
@@ -1080,7 +1103,7 @@ def show_student_dashboard():
 
     # Сақталған профильді алу
     try:
-        student = get_my_profile(user)
+        student = get_demo_profile()
     except Exception as error:
         st.error(f"Профильді алу қатесі: {error}")
         return
