@@ -45,8 +45,7 @@ st.set_page_config(
 
 apply_design()
 initialize_database()
-seed_demo_teachers()
-
+# seed_demo_teachers()
 # ==========================================
 # SESSION STATE
 # ==========================================
@@ -422,7 +421,9 @@ def show_demo_login():
         st.rerun()
 
 def show_login():
-    st.markdown(
+   show_demo_login() 
+   st.divider()
+   st.markdown(
         """
         <style>
         .auth-banner {
@@ -445,11 +446,8 @@ def show_login():
         """,
         unsafe_allow_html=True,
     )
-
-    
-    left, center, right = st.columns([1, 2, 1])
-
-    with center:
+   left, center, right = st.columns([1, 2, 1])
+   with center:
         with st.container(border=True):
 
             login_tab, register_tab = st.tabs([
@@ -578,9 +576,8 @@ def show_login():
                 "SMART.ENU ресми кіру жүйесі "
                 "әзірге қосылмаған."
             )
-
-    show_demo_login()
-    st.divider()
+            show_demo_login()
+   st.divider()
 # ==========================================
 # RESEARCH PLATFORMS
 # ==========================================
