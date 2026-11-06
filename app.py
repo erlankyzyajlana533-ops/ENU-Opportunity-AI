@@ -787,9 +787,9 @@ def show_student_profile(user):
             type="primary",
         )
         if submitted:
-        if not name.strip():
-            st.warning("Аты-жөніңізді енгізіңіз")
-            return
+            if not name.strip():
+                st.warning("Аты-жөніңізді енгізіңіз")
+                return
 
         try:
             profile_id = save_demo_profile(
