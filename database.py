@@ -566,3 +566,48 @@ def initialize_database():
     create_chat_table()
     create_account_links_table()
     create_users_table()
+
+# ==========================================
+# DEMO TEACHERS
+# ==========================================
+
+def seed_demo_teachers():
+    demo_teachers = [
+        (
+            "Демо оқытушы 1",
+            "Artificial Intelligence, Machine Learning, Python",
+            "Жасанды интеллект және машиналық оқыту",
+            "AI, Data Science, Python"
+        ),
+        (
+            "Демо оқытушы 2",
+            "Internet of Things, Smart Systems",
+            "IoT және интеллектуалды жүйелер",
+            "Smart Farming, IoT, Automation"
+        ),
+        (
+            "Демо оқытушы 3",
+            "Big Data, Data Analytics, Machine Learning",
+            "Үлкен деректерді талдау",
+            "Python, Data Science, Big Data"
+        )
+    ]
+
+    create_database()
+
+    with sqlite3.connect(DB_NAME) as conn:
+        for name, research, articles, projects in demo_teachers:
+            existing = conn.execute(
+                "SELECT id FROM teachers WHERE name = ?",
+                (name,)
+            ).fetchone()
+
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO teachers
+                    (name, research, articles, projects)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (name, research, articles, projects)
+                )
