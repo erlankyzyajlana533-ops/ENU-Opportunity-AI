@@ -1210,15 +1210,13 @@ def show_teacher_dashboard():
 # ==========================================
 
 def show_home(user):
-    banner = (
-        BASE_DIR / "assets" / "enu_building.png"
-    )
+    
+        )st.title("🎓 ENU Opportunity AI")
 
-    if banner.exists():
-        st.image(
-            str(banner),
-            use_container_width=True,
-        )
+    st.subheader(
+        "Студент пен ғылыми жетекшіні "
+        "интеллектуалды сәйкестендіру жүйесі"
+    )
 
     st.title("🎓 ENU Opportunity AI")
 
