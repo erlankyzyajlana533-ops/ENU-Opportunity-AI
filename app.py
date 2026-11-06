@@ -322,7 +322,7 @@ def save_my_profile(user, values):
 
         except Exception:
             conn.rollback()
-            raise
+            raise  
 
 
 def get_photo(name):
@@ -703,7 +703,7 @@ def show_research_resources():
 # ==========================================
 # STUDENT PROFILE
 # ==========================================
-
+st.session_state.show_matches = True
 def show_student_profile(user):
     st.subheader("📋 Менің профилім")
 
@@ -1065,30 +1065,76 @@ def show_chat(request_id, role, teacher_name):
 # STUDENT DASHBOARD
 # ==========================================
 
+
+# ==========================================
+# STUDENT DASHBOARD
+# ==========================================
+
 def show_student_dashboard():
     user = st.session_state.current_user
 
     st.header("🎓 Студент кабинеті")
 
+    # Студент профилі
     show_student_profile(user)
 
-    student = get_my_profile(user)
+    # Сақталған профильді алу
+    try:
+        student = get_my_profile(user)
+    except Exception as error:
+        st.error(f"Профильді алу қатесі: {error}")
+        return
 
     if student is None:
+        st.info(
+            "Ғылыми жетекшілерді көру үшін "
+            "алдымен профиліңізді сақтаңыз."
+        )
         return
 
     st.divider()
+
+    st.success("✅ Студент профилі дайын!")
+
+    # Ғылыми жетекшілерді іздеу
+    st.subheader("🤖 ЖИ ұсынған ғылыми жетекшілер")
+
+    if st.button(
+        "🔍 Маған сәйкес оқытушыларды табу",
+        type="primary",
+        use_container_width=True,
+    ):
+        st.session_state.show_matches = True
+
+    if st.session_state.get("show_matches", False):
+        try:
+            show_student_matches(student)
+        except Exception as error:
+            st.error(
+                f"Оқытушыларды іздеу қатесі: {error}"
+            )
+
+    st.divider()
+
+    # Студенттің өтінімдері
     st.subheader("📨 Менің өтінімдерім")
 
-    requests_list = get_student_requests(
-        student["id"]
-    )
+    try:
+        requests_list = get_student_requests(
+            student["id"]
+        )
+    except Exception as error:
+        st.error(
+            f"Өтінімдерді алу қатесі: {error}"
+        )
+        return
 
     if not requests_list:
         st.info("Әзірге өтінімдер жоқ")
 
     for req in requests_list:
         with st.container(border=True):
+
             teacher_name = req["teacher_name"]
 
             show_teacher_header(teacher_name)
@@ -1111,16 +1157,6 @@ def show_student_dashboard():
             else:
                 st.error("Өтінім қабылданбады")
 
-    st.divider()
-
-    if st.button(
-        "🔍 Ғылыми жетекшілерді табу",
-        type="primary",
-    ):
-        st.session_state.show_matches = True
-
-    if st.session_state.show_matches:
-        show_student_matches(student)
 
 
 # ==========================================
