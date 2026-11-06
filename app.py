@@ -1211,12 +1211,6 @@ def show_teacher_dashboard():
 
 def show_home(user):
     
-        )st.title("🎓 ENU Opportunity AI")
-
-    st.subheader(
-        "Студент пен ғылыми жетекшіні "
-        "интеллектуалды сәйкестендіру жүйесі"
-    )
 
     st.title("🎓 ENU Opportunity AI")
 
